@@ -319,6 +319,35 @@ def days_until_empty(
     return None
 
 
+# --- importing from recorded volumes ----------------------------------------
+
+# A recorded rise smaller than this is the reading wobbling, not a delivery.
+# BoilerJuice reports in steps of about 10 L and can step back up by one;
+# treating that as a refill would book the next step down a second time.
+IMPORT_REFILL_THRESHOLD_LITRES = 100.0
+
+
+def history_from_volumes(samples: list[tuple[datetime, float]]) -> DatedHistory:
+    """Rebuild dated consumption from a series of recorded tank volumes.
+
+    The same bookkeeping a live poll does, replayed: a fall below the
+    reference is oil burnt, spread over the days since the reference last
+    moved; a rise of IMPORT_REFILL_THRESHOLD_LITRES or more is a refill and
+    starts a new interval; a smaller rise is noise and leaves the reference
+    where it was, so the same litres are never counted twice.
+    """
+    allocated: DatedHistory = []
+    reference: float | None = None
+    since: datetime | None = None
+    for moment, volume in sorted(samples, key=lambda sample: sample[0]):
+        if reference is None or volume >= reference + IMPORT_REFILL_THRESHOLD_LITRES:
+            reference, since = volume, moment
+        elif volume < reference:
+            allocated.extend(allocate_over_days(reference - volume, since, moment))
+            reference, since = volume, moment
+    return allocated
+
+
 # --- seasonal forecast ------------------------------------------------------
 
 

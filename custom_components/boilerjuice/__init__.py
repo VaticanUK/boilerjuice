@@ -9,7 +9,13 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+    callback,
+)
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
@@ -44,6 +50,7 @@ CONFIG_SCHEMA = vol.Schema(
 # Service schemas
 SERVICE_RESET_CONSUMPTION = "reset_consumption"
 SERVICE_SET_CONSUMPTION = "set_consumption"
+SERVICE_IMPORT_HISTORY = "import_history"
 
 # Target selectors Home Assistant injects when the user picks a target in the
 # UI, plus the explicit entry_id escape hatch. Every one of these is resolved
@@ -89,6 +96,8 @@ SET_CONSUMPTION_SCHEMA = vol.Schema(
         vol.Optional("daily"): storable_litres,
     }
 )
+
+IMPORT_HISTORY_SCHEMA = vol.Schema(_TARGET_FIELDS)
 
 
 def _as_list(value: Any) -> list[str]:
@@ -469,6 +478,31 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_SET_CONSUMPTION,
         async_handle_set_consumption,
         schema=SET_CONSUMPTION_SCHEMA,
+    )
+
+    async def async_handle_import_history(call: ServiceCall) -> ServiceResponse:
+        """Handle the service call to import history from the recorder."""
+        coordinator, tank_ids = _resolve_targets(hass, call)
+        results: dict[str, dict[str, Any]] = {}
+
+        async def run() -> None:
+            results.update(await coordinator.async_import_history(tank_ids))
+
+        await _stored_history_change(run())
+        # Keyed by tank name rather than id: the response is for reading.
+        return {
+            "tanks": {
+                coordinator.device_info(tank_id).get("name") or tank_id: result
+                for tank_id, result in results.items()
+            }
+        }
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_HISTORY,
+        async_handle_import_history,
+        schema=IMPORT_HISTORY_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
 

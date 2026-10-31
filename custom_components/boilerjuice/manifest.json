@@ -1,6 +1,9 @@
 {
   "domain": "boilerjuice",
   "name": "BoilerJuice",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@willbeeching"
   ],
