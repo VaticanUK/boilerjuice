@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import consumption
@@ -226,24 +226,77 @@ class TankTracker:
     # ------------------------------------------------------------------
 
     def decorate(
-        self, published: dict[str, Any], kwh_per_litre: float
+        self, published: dict[str, Any], kwh_per_litre: float, now: datetime
     ) -> dict[str, Any]:
         """Attach this tank's derived figures to a published state."""
         daily = self.daily_litres
+        outlook = consumption.seasonal_forecast(
+            consumption.daily_totals(self.state.history), now
+        )
 
         published["total_consumption_usable_liters"] = self.total_litres
         published["total_consumption_usable_kwh"] = self.total_kwh(kwh_per_litre)
         published["daily_consumption_usable_liters"] = daily
         published["consumption_sample_days"] = self.sample_days
         published["daily_consumption_is_manual"] = self.daily_is_manual
-        published["days_until_empty"] = consumption.days_until_empty(
-            published.get("current_volume_litres"),
-            published.get("capacity_litres"),
-            published.get("total_level_percentage"),
-            daily or 0.0,
-        )
+        published["forecast"] = self._describe(outlook, now)
+        published.update(self._project_empty(published, daily, outlook, now))
         published["kwh_per_litre"] = kwh_per_litre
         return published
+
+    @staticmethod
+    def _describe(
+        outlook: consumption.Forecast | None, now: datetime
+    ) -> dict[str, Any] | None:
+        """Return the seasonal forecast as published figures."""
+        if outlook is None:
+            return None
+        model = outlook.model
+        return {
+            "today": round(outlook.daily(now.date()), 1),
+            "mean": round(model.mean, 1),
+            "seasonal_swing_percent": round(model.amplitude / model.mean * 100),
+            "peak": f"{model.peak.day} {model.peak:%B}",
+            "recent_vs_expected": round(outlook.anomaly, 2),
+            "fit_days": model.fit_days,
+            "months_covered": model.months_covered,
+            "monthly": outlook.monthly(),
+        }
+
+    def _project_empty(
+        self,
+        published: dict[str, Any],
+        daily: float | None,
+        outlook: consumption.Forecast | None,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Estimate when the tank runs dry, and say how.
+
+        A manual daily rate is the user overruling the measurements, so it
+        beats the seasonal model as well as the rolling average.
+        """
+        volume = published.get("current_volume_litres")
+        if outlook is not None and not self.daily_is_manual:
+            days = consumption.days_until_empty_seasonal(volume, outlook, now)
+            method = "seasonal"
+        else:
+            days = consumption.days_until_empty(
+                volume,
+                published.get("capacity_litres"),
+                published.get("total_level_percentage"),
+                daily or 0.0,
+            )
+            if self.daily_is_manual:
+                method = "manual"
+            elif daily:
+                method = "recent_average"
+            else:
+                method = "capacity_estimate"
+        return {
+            "days_until_empty": days,
+            "days_until_empty_method": None if days is None else method,
+            "empty_date": None if days is None else (now + timedelta(days=days)).date(),
+        }
 
     def publish(
         self, reading: TankReading, now: datetime, kwh_per_litre: float
@@ -265,4 +318,4 @@ class TankTracker:
         else:
             published["seasonal_stats"] = {}
 
-        return self.decorate(published, kwh_per_litre)
+        return self.decorate(published, kwh_per_litre, now)

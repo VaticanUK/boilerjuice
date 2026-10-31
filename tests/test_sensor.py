@@ -30,7 +30,7 @@ async def test_the_full_set_of_sensors_is_created(
         for state in hass.states.async_all("sensor")
         if state.entity_id.startswith("sensor.")
     ]
-    assert len(states) == 15
+    assert len(states) == 21
 
 
 async def test_sensor_values_come_from_the_parsed_page(
@@ -256,7 +256,7 @@ async def test_every_sensor_reports_unknown_when_there_is_no_reading(
     entities = [
         BoilerJuiceSensor(coordinator, TANK_ID, description) for description in SENSORS
     ]
-    assert len(entities) == 15
+    assert len(entities) == 33
 
     coordinator.data = None
 
@@ -331,3 +331,138 @@ def test_the_platform_declares_parallel_updates() -> None:
     from custom_components.boilerjuice import sensor
 
     assert sensor.PARALLEL_UPDATES == 0
+
+
+async def test_the_forecast_sensors_follow_the_seasonal_model(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """With enough history the projection comes from the seasonal model."""
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    tracker = tracker_of(coordinator)
+
+    today = dt_util.start_of_local_day()
+    tracker.state.history = [(today - timedelta(days=n), 10.0) for n in range(1, 31)]
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    def state(suffix: str):
+        return next(
+            state
+            for state in hass.states.async_all("sensor")
+            if state.entity_id.endswith(suffix)
+        )
+
+    forecast = state("_forecast_oil_consumption")
+    assert float(forecast.state) > 0
+    assert forecast.attributes["fit_days"] == 30
+    assert len(forecast.attributes["monthly_forecast"]) == 12
+    assert forecast.attributes["next_12_months_total"] > 0
+
+    days = state("_days_until_empty")
+    assert days.attributes["method"] == "seasonal"
+    empty = state("_projected_empty_date")
+    assert empty.attributes["method"] == "seasonal"
+    expected = (dt_util.now() + timedelta(days=float(days.state))).date()
+    assert empty.state == expected.isoformat()
+
+
+async def test_a_manual_rate_overrules_the_seasonal_model(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    tracker = tracker_of(coordinator)
+
+    today = dt_util.start_of_local_day()
+    tracker.state.history = [(today - timedelta(days=n), 10.0) for n in range(1, 31)]
+    tracker.state.daily_override = 25.0
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    published = reading_of(coordinator)
+    assert published["days_until_empty_method"] == "manual"
+    assert published["days_until_empty"] == 70.0
+    # The model is still published alongside, for comparison.
+    assert published["forecast"] is not None
+
+
+async def test_each_season_and_month_has_its_own_average_sensor(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A season or month never recorded is unknown, not zero."""
+    from datetime import datetime
+
+    from homeassistant.util import dt as dt_util
+
+    entry = await setup_account(hass, aioclient_mock)
+    coordinator = coordinator_of(entry)
+    tracker = tracker_of(coordinator)
+
+    def last(month: int, date: int) -> datetime:
+        """Return the most recent past `date` of `month`, inside the history window."""
+        now = dt_util.now()
+        moment = datetime(now.year, month, date, tzinfo=now.tzinfo)
+        return moment if moment < now else moment.replace(year=now.year - 1)
+
+    tracker.state.history = [
+        (last(1, 10), 30.0),
+        (last(1, 11), 20.0),
+        (last(2, 10), 16.0),
+        (last(7, 10), 2.0),
+    ]
+
+    mock_site(aioclient_mock, tank_html=tank_page(percentage=70, litres=1750))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    def state(suffix: str):
+        return next(
+            state
+            for state in hass.states.async_all("sensor")
+            if state.entity_id.endswith(suffix)
+        )
+
+    winter = state("_winter_average_oil_consumption")
+    assert winter.state == "22.0"
+    assert winter.attributes["min"] == 16.0
+    assert winter.attributes["max"] == 30.0
+    assert state("_summer_average_oil_consumption").state == "2.0"
+    assert state("_spring_average_oil_consumption").state == "unknown"
+
+    # The monthly sensors are registered but off until somebody wants them.
+    from custom_components.boilerjuice.sensor import SENSORS
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    months = [
+        d for d in SENSORS if d.key.endswith("_average") and d.key[:-8] not in SEASONS
+    ]
+    assert len(months) == 12
+    for description in months:
+        entity_id = registry.async_get_entity_id(
+            "sensor", "boilerjuice", f"{TANK_ID}_{description.key}"
+        )
+        assert entity_id is not None
+        assert (
+            registry.async_get(entity_id).disabled_by
+            is er.RegistryEntryDisabler.INTEGRATION
+        )
+
+    published = reading_of(coordinator)
+    by_key = {d.key: d for d in months}
+    assert by_key["january_average"].value(published) == 25.0
+    assert by_key["february_average"].value(published) == 16.0
+    assert by_key["march_average"].value(published) is None

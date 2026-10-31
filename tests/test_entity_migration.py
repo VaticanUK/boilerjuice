@@ -9,7 +9,8 @@ from custom_components.boilerjuice.const import (
     CONF_TANK_ID,
     DOMAIN,
 )
-from custom_components.boilerjuice.sensor import SENSORS
+from custom_components.boilerjuice.consumption import SEASONS
+from custom_components.boilerjuice.sensor import MONTHS, SENSORS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -134,10 +135,17 @@ async def test_a_second_setup_does_not_migrate_twice(
     )
 
 
-async def test_every_sensor_carries_a_legacy_class_except_the_new_one() -> None:
+async def test_every_sensor_carries_a_legacy_class_except_the_new_ones() -> None:
     """A missing mapping would silently orphan somebody's entity."""
     without_legacy = [
         description.key for description in SENSORS if description.legacy_class is None
     ]
 
-    assert without_legacy == ["last_successful_update", "heating_season"]
+    assert without_legacy == [
+        "empty_date",
+        "forecast_consumption",
+        "last_successful_update",
+        "heating_season",
+        *(f"{season}_average" for season in SEASONS),
+        *(f"{month}_average" for month in MONTHS),
+    ]

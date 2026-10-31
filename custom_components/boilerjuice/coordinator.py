@@ -446,7 +446,9 @@ class BoilerJuiceDataUpdateCoordinator(
                 state = published.get(tracker.tank_id)
                 if state is None:
                     continue
-                updated = tracker.decorate(dict(state), self._kwh_per_litre)
+                updated = tracker.decorate(
+                    dict(state), self._kwh_per_litre, dt_util.now()
+                )
                 updated["last_level_change"] = tracker.last_level_change
                 published[tracker.tank_id] = updated
             if published:
@@ -490,7 +492,9 @@ class BoilerJuiceDataUpdateCoordinator(
                 state = published[tracker.tank_id]
                 tracker.rebase(state)
                 tracker.state.last_update = dt_util.now()
-                updated = tracker.decorate(dict(state), self._kwh_per_litre)
+                updated = tracker.decorate(
+                    dict(state), self._kwh_per_litre, dt_util.now()
+                )
                 updated["last_level_change"] = tracker.last_level_change
                 published[tracker.tank_id] = updated
                 self._account.tanks[tracker.tank_id] = tracker.state

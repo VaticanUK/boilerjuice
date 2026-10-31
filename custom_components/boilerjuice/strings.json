@@ -130,6 +130,12 @@
       "days_until_empty": {
         "name": "Days until empty"
       },
+      "empty_date": {
+        "name": "Projected empty date"
+      },
+      "forecast_consumption": {
+        "name": "Forecast oil consumption"
+      },
       "energy_content": {
         "name": "Oil energy content"
       },
@@ -156,6 +162,54 @@
           "summer": "Summer",
           "autumn": "Autumn"
         }
+      },
+      "winter_average": {
+        "name": "Winter average oil consumption"
+      },
+      "spring_average": {
+        "name": "Spring average oil consumption"
+      },
+      "summer_average": {
+        "name": "Summer average oil consumption"
+      },
+      "autumn_average": {
+        "name": "Autumn average oil consumption"
+      },
+      "january_average": {
+        "name": "January average oil consumption"
+      },
+      "february_average": {
+        "name": "February average oil consumption"
+      },
+      "march_average": {
+        "name": "March average oil consumption"
+      },
+      "april_average": {
+        "name": "April average oil consumption"
+      },
+      "may_average": {
+        "name": "May average oil consumption"
+      },
+      "june_average": {
+        "name": "June average oil consumption"
+      },
+      "july_average": {
+        "name": "July average oil consumption"
+      },
+      "august_average": {
+        "name": "August average oil consumption"
+      },
+      "september_average": {
+        "name": "September average oil consumption"
+      },
+      "october_average": {
+        "name": "October average oil consumption"
+      },
+      "november_average": {
+        "name": "November average oil consumption"
+      },
+      "december_average": {
+        "name": "December average oil consumption"
       }
     }
   },

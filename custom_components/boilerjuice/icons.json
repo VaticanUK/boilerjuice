@@ -10,6 +10,12 @@
       "days_until_empty": {
         "default": "mdi:calendar-clock"
       },
+      "empty_date": {
+        "default": "mdi:calendar-alert"
+      },
+      "forecast_consumption": {
+        "default": "mdi:chart-bell-curve-cumulative"
+      },
       "energy_content": {
         "default": "mdi:flash"
       },
@@ -24,6 +30,54 @@
       },
       "heating_season": {
         "default": "mdi:sun-snowflake-variant"
+      },
+      "winter_average": {
+        "default": "mdi:snowflake"
+      },
+      "spring_average": {
+        "default": "mdi:flower"
+      },
+      "summer_average": {
+        "default": "mdi:white-balance-sunny"
+      },
+      "autumn_average": {
+        "default": "mdi:leaf"
+      },
+      "january_average": {
+        "default": "mdi:calendar-month"
+      },
+      "february_average": {
+        "default": "mdi:calendar-month"
+      },
+      "march_average": {
+        "default": "mdi:calendar-month"
+      },
+      "april_average": {
+        "default": "mdi:calendar-month"
+      },
+      "may_average": {
+        "default": "mdi:calendar-month"
+      },
+      "june_average": {
+        "default": "mdi:calendar-month"
+      },
+      "july_average": {
+        "default": "mdi:calendar-month"
+      },
+      "august_average": {
+        "default": "mdi:calendar-month"
+      },
+      "september_average": {
+        "default": "mdi:calendar-month"
+      },
+      "october_average": {
+        "default": "mdi:calendar-month"
+      },
+      "november_average": {
+        "default": "mdi:calendar-month"
+      },
+      "december_average": {
+        "default": "mdi:calendar-month"
       }
     }
   }
