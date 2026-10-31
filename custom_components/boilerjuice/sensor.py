@@ -161,6 +161,7 @@ def _forecast_attributes(data: dict[str, Any]) -> dict[str, Any]:
         "recent_vs_expected": forecast["recent_vs_expected"],
         "fit_days": forecast["fit_days"],
         "months_covered": forecast["months_covered"],
+        "harmonics": forecast["harmonics"],
         "monthly_forecast": forecast["monthly"],
         "next_12_months_total": round(sum(forecast["monthly"].values())),
     }

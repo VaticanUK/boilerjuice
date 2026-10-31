@@ -416,32 +416,74 @@ def test_the_model_never_expects_a_negative_burn() -> None:
     assert model.expected(date(2026, 7, 2)) == 0.0
 
 
-def test_a_cold_week_lifts_the_near_forecast_and_fades() -> None:
+def test_a_cold_week_is_reported_but_not_carried_forward() -> None:
+    """Backtesting showed carrying it forward made forecasts worse."""
     totals = history(date(2025, 10, 31), 365)
     for n in range(1, 8):
-        day = (NOW.date() - timedelta(days=n)).isoformat()
-        totals[day] *= 1.5
+        totals[(NOW.date() - timedelta(days=n)).isoformat()] *= 1.5
 
     outlook = consumption.seasonal_forecast(totals, NOW)
 
     assert outlook is not None
-    assert outlook.anomaly == pytest.approx(1.5, abs=0.1)
-    today, later = NOW.date(), NOW.date() + timedelta(days=60)
-    assert outlook.daily(today) / outlook.model.expected(today) == pytest.approx(
-        outlook.anomaly
+    # Not quite 1.5: the cold week is part of the fit, which leans towards it.
+    assert outlook.recent_vs_expected is not None
+    assert outlook.recent_vs_expected > 1.3
+    today = NOW.date()
+    assert outlook.daily(today) == outlook.model.expected(today)
+
+
+def test_nothing_expected_means_no_recent_comparison() -> None:
+    model = consumption.SeasonalModel(
+        mean=0.0, cos_term=0.0, sin_term=0.0, fit_days=365, months_covered=12
     )
-    assert outlook.daily(later) / outlook.model.expected(later) < 1.05
+
+    assert consumption.recent_vs_expected(model, {"2026-10-30": 3.0}, NOW) is None
 
 
-def test_the_anomaly_is_bounded() -> None:
-    totals = history(date(2025, 10, 31), 365)
-    for n in range(1, 8):
-        totals[(NOW.date() - timedelta(days=n)).isoformat()] *= 10
+def peaky(day: date) -> float:
+    """Return a winter that peaks sharply over a summer of hot water only."""
+    angle = 2 * math.pi * (day.timetuple().tm_yday - 15) / 365.25
+    return max(1.0, 1.0 + 12.0 * math.cos(angle))
 
-    outlook = consumption.seasonal_forecast(totals, NOW)
 
-    assert outlook is not None
-    assert outlook.anomaly == consumption.ANOMALY_MAX
+def test_the_overtone_waits_for_a_full_year() -> None:
+    eleven = history(date(2025, 12, 1), 334, peaky)
+    twelve = history(date(2025, 10, 31), 365, peaky)
+
+    one = consumption.fit_seasonal(eleven, NOW)
+    two = consumption.fit_seasonal(twelve, NOW)
+
+    assert one is not None
+    assert one.harmonics == 1
+    assert (one.cos2_term, one.sin2_term) == (0.0, 0.0)
+    assert two is not None
+    assert two.harmonics == 2
+
+
+def test_the_overtone_follows_a_sharp_winter_and_a_flat_summer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    totals = history(date(2025, 10, 31), 365, peaky)
+    two = consumption.fit_seasonal(totals, NOW)
+    monkeypatch.setattr(consumption, "SECOND_HARMONIC_MIN_MONTHS", 99)
+    one = consumption.fit_seasonal(totals, NOW)
+    assert one is not None
+    assert two is not None
+
+    def error(model: consumption.SeasonalModel) -> float:
+        return sum(
+            (model.expected(date.fromisoformat(day)) - litres) ** 2
+            for day, litres in totals.items()
+        )
+
+    assert error(two) < error(one) * 0.8
+    # The peak itself is where a single wave falls shortest.
+    january = date(2026, 1, 15)
+    assert abs(two.expected(january) - peaky(january)) < abs(
+        one.expected(january) - peaky(january)
+    )
+    assert abs((two.peak - date(2001, 1, 15)).days) <= 7
+    assert two.amplitude > one.amplitude
 
 
 def test_the_monthly_forecast_runs_twelve_months_across_the_new_year() -> None:
@@ -460,7 +502,7 @@ def flat(rate: float) -> consumption.Forecast:
     model = consumption.SeasonalModel(
         mean=rate, cos_term=0.0, sin_term=0.0, fit_days=365, months_covered=12
     )
-    return consumption.Forecast(model=model, anomaly=1.0, today=NOW.date())
+    return consumption.Forecast(model=model, recent_vs_expected=None, today=NOW.date())
 
 
 @pytest.mark.parametrize("hour", [0, 12, 23])

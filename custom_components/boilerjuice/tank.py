@@ -296,9 +296,14 @@ class TankTracker:
             "mean": round(model.mean, 1),
             "seasonal_swing_percent": round(model.amplitude / model.mean * 100),
             "peak": f"{model.peak.day} {model.peak:%B}",
-            "recent_vs_expected": round(outlook.anomaly, 2),
+            "recent_vs_expected": (
+                None
+                if outlook.recent_vs_expected is None
+                else round(outlook.recent_vs_expected, 2)
+            ),
             "fit_days": model.fit_days,
             "months_covered": model.months_covered,
+            "harmonics": model.harmonics,
             "monthly": outlook.monthly(),
         }
 

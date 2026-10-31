@@ -249,12 +249,31 @@ coldest weeks burning 160% of the average and high summer (hot water only)
 it is the shape, scaled so it reproduces what your tank actually burnt; with
 a year of history your tank's own cycle has overruled it.
 
-The fitted wave is the normal year. On top of it the forecast compares the
-last seven complete days with what the wave expected for them. If the last
-week ran 30% hot, today's forecast is 30% up, and the difference halves
-every 14 days going forward: a cold snap moves next week's estimate and
-barely touches next winter's. That ratio is clamped between half and double,
-so one odd week cannot run away with it.
+One wave is symmetrical: it rises as far above the average in winter as it
+dips below it in summer, for as long. Most houses are not like that. Summer
+flattens out at hot water only while winter climbs to a sharp peak, and a
+single wave drawn through both reads December and January low and March
+high, which are the months a tank most often runs dry in. So once the
+history covers all twelve calendar months, the fit adds a second wave at
+twice the frequency:
+
+```
+burn(day) = average + annual wave + half-year wave
+```
+
+which lets the curve flatten its summer and sharpen its winter. It is held
+towards zero with the same 30 days of weight, so it only appears when your
+tank's year asks for it. Before twelve months it is left out: with gaps in
+the year it bends through them instead of following data.
+
+The forecast is the fitted year and nothing else. It does not carry the last
+week forward. That was tried: the forecast compared the last seven days with
+what it expected and nudged the coming weeks by the difference. Backtested
+on a real tank's history it made every horizon worse, from a month ahead to
+four, at every window from one week to six. BoilerJuice reports in steps of
+about 10 L, so a week holds only a step or two, and the ratio says more about
+where those steps fell than about the weather. The ratio is still published
+as `recent_vs_expected`, for reading.
 
 Days until empty walks that forecast forward a day at a time until it has
 burnt what is in the tank. The `method` attribute says which estimate was
@@ -274,7 +293,8 @@ The forecast sensor's attributes show what the model has learnt:
 | `annual_average` | The average daily burn across the year, in L/day |
 | `seasonal_swing_percent` | How far the peak sits above that average. 60 means the coldest weeks burn 160% of it |
 | `peak` | The day of the year the tank burns most |
-| `recent_vs_expected` | Last week's burn over what the model expected for it. 1.2 is 20% above |
+| `harmonics` | 1 for the annual wave alone, 2 once a full year of history adds the half-year wave |
+| `recent_vs_expected` | Last week's burn over what the model expected for it. 1.2 is 20% above. For information: it does not change the forecast. Read it with BoilerJuice's 10 L resolution in mind |
 | `fit_days` | Complete days of history the fit used |
 | `months_covered` | How many calendar months they span. Until this approaches 12 the default shape is doing much of the work |
 | `monthly_forecast` | Litres expected in each of the next 12 calendar months, starting with this one |
@@ -283,14 +303,15 @@ The forecast sensor's attributes show what the model has learnt:
 ### What the estimates cannot tell you
 
 - **The forecast knows the calendar, not the weather.** It has learnt what a
-  normal November looks like for your house and carries a recent cold or mild
-  spell forward for a few weeks. It cannot see next month's weather, and an
-  unusually hard winter will beat it.
+  normal November looks like for your house, averaged over the last two
+  years. It cannot see next month's weather, and an unusually hard winter
+  will beat it. A milder or colder year than usual shows up in
+  `recent_vs_expected` before it shows up in the fit.
 - **Change how you heat the house and the forecast lags.** New boiler, new
   insulation, someone now working from home: the fit averages the last two
-  years, so it takes months for a change like that to show fully. The recent
-  adjustment picks up the difference in the meantime, within its half-to-double
-  bounds.
+  years, so it takes months for a change like that to show fully.
+  `recent_vs_expected` drifting away from 1 for weeks on end is the sign of
+  it.
 - **A forecast past two years is not given.** If the model has learnt that
   the tank burns next to nothing, days until empty reports unknown rather
   than a number in the thousands.
