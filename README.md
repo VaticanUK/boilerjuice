@@ -500,6 +500,12 @@ unit as `d` rather than `days`. Take the offered action on both: delete the
 height statistics, and update the unit on days until empty if that option is
 offered so its history carries across. Neither comes back.
 
+Upgrading from a release made between April and December 2025 raises a
+third: **Seasonal oil consumption** was labelled in `L` then, although its
+values were always litres per day. Choose to update the unit to `L/day`
+rather than delete: the old numbers mean what the new label says, so
+relabelling keeps that history correct.
+
 **Other changes you will notice:**
 
 - Oil level is no longer a battery device class, so it leaves battery
