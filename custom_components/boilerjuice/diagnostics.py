@@ -62,6 +62,14 @@ def _tank_diagnostics(
             else tracker.last_level_change.isoformat()
         ),
         "days_until_empty": state.get("days_until_empty"),
+        "days_until_empty_method": state.get("days_until_empty_method"),
+        # The fitted shape, without the monthly litres it projects.
+        "forecast": {
+            key: value
+            for key, value in (state.get("forecast") or {}).items()
+            if key != "monthly"
+        }
+        or None,
         "seasons_with_data": sorted(
             season
             for season in ("winter", "spring", "summer", "autumn")

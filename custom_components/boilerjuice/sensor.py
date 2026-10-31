@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
@@ -137,14 +137,45 @@ def _seasonal_attributes(data: dict[str, Any]) -> dict[str, Any]:
     }
     if stats.get("monthly"):
         attributes["monthly_averages"] = stats["monthly"]
+    if stats.get("monthly_totals"):
+        attributes["monthly_totals"] = stats["monthly_totals"]
     return attributes
+
+
+def _forecast_today(data: dict[str, Any]) -> StateType:
+    """Return what the seasonal model expects the tank to burn today."""
+    forecast = data.get("forecast") or {}
+    today: float | None = forecast.get("today")
+    return today
+
+
+def _forecast_attributes(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the model behind the forecast and the months it projects."""
+    forecast = data.get("forecast") or {}
+    if not forecast:
+        return {}
+    return {
+        "annual_average": forecast["mean"],
+        "seasonal_swing_percent": forecast["seasonal_swing_percent"],
+        "peak": forecast["peak"],
+        "recent_vs_expected": forecast["recent_vs_expected"],
+        "fit_days": forecast["fit_days"],
+        "months_covered": forecast["months_covered"],
+        "monthly_forecast": forecast["monthly"],
+        "next_12_months_total": round(sum(forecast["monthly"].values())),
+    }
+
+
+def _empty_attributes(data: dict[str, Any]) -> dict[str, Any]:
+    """Say which estimate the projection came from."""
+    return {"method": data.get("days_until_empty_method")}
 
 
 @dataclass(frozen=True, kw_only=True)
 class BoilerJuiceSensorDescription(SensorEntityDescription):
     """Describes one BoilerJuice sensor."""
 
-    value: Callable[[dict[str, Any]], StateType | datetime]
+    value: Callable[[dict[str, Any]], StateType | date | datetime]
     attributes: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     # The class name this sensor's unique id used to be built from, so
     # existing entities keep their identity across the upgrade.
@@ -223,7 +254,24 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         native_unit_of_measurement=DAYS,
         state_class=SensorStateClass.MEASUREMENT,
         value=lambda data: data.get("days_until_empty"),
+        attributes=_empty_attributes,
         legacy_class="BoilerJuiceDaysUntilEmptySensor",
+    ),
+    BoilerJuiceSensorDescription(
+        key="empty_date",
+        translation_key="empty_date",
+        device_class=SensorDeviceClass.DATE,
+        value=lambda data: data.get("empty_date"),
+        attributes=_empty_attributes,
+    ),
+    BoilerJuiceSensorDescription(
+        key="forecast_consumption",
+        translation_key="forecast_consumption",
+        native_unit_of_measurement=LITRES_PER_DAY,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value=_forecast_today,
+        attributes=_forecast_attributes,
     ),
     BoilerJuiceSensorDescription(
         key="energy_content",
@@ -288,6 +336,73 @@ SENSORS: tuple[BoilerJuiceSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value=_heating_season,
     ),
+)
+
+MONTHS = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)  # fmt: skip
+
+
+def _season_average(season: str) -> Callable[[dict[str, Any]], StateType]:
+    """Return a reader for one season's average daily consumption."""
+
+    def read(data: dict[str, Any]) -> StateType:
+        average: float | None = (data.get("seasonal_stats") or {}).get(f"{season}_avg")
+        return average
+
+    return read
+
+
+def _season_range(season: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Return a reader for the lightest and heaviest day of one season."""
+
+    def read(data: dict[str, Any]) -> dict[str, Any]:
+        stats = data.get("seasonal_stats") or {}
+        return {"min": stats.get(f"{season}_min"), "max": stats.get(f"{season}_max")}
+
+    return read
+
+
+def _month_average(month: int) -> Callable[[dict[str, Any]], StateType]:
+    """Return a reader for one calendar month's average daily consumption."""
+
+    def read(data: dict[str, Any]) -> StateType:
+        averages = (data.get("seasonal_stats") or {}).get("month_avg") or {}
+        average: float | None = averages.get(month)
+        return average
+
+    return read
+
+
+# One sensor per season and one per calendar month, each averaging every day
+# recorded in it. Unknown until that season or month has recorded a day, for
+# the same reason as the seasonal sensor: a month never seen is not a month
+# that burnt nothing.
+SENSORS += tuple(
+    BoilerJuiceSensorDescription(
+        key=f"{season}_average",
+        translation_key=f"{season}_average",
+        native_unit_of_measurement=LITRES_PER_DAY,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value=_season_average(season),
+        attributes=_season_range(season),
+    )
+    for season in SEASONS
+) + tuple(
+    BoilerJuiceSensorDescription(
+        key=f"{month}_average",
+        translation_key=f"{month}_average",
+        native_unit_of_measurement=LITRES_PER_DAY,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        # Twelve per tank is a lot to put on every dashboard unasked, so
+        # they are there to switch on rather than to switch off.
+        entity_registry_enabled_default=False,
+        value=_month_average(number),
+    )
+    for number, month in enumerate(MONTHS, start=1)
 )
 
 # The incremental "Oil Consumption (kWh)" sensor accumulated state as a side
@@ -387,7 +502,7 @@ class BoilerJuiceSensor(
         return super().available and self.data is not None
 
     @property
-    def native_value(self) -> StateType | datetime:
+    def native_value(self) -> StateType | date | datetime:
         """Return the state of the sensor."""
         data = self.data
         return None if data is None else self.entity_description.value(data)

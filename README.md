@@ -132,8 +132,38 @@ One set per tank.
 | Daily oil consumption | L/day | Rolling 7-day average. Unknown until a complete day has been measured. `sample_days` says how much evidence is behind it |
 | Total oil consumption | L | Accumulates since the last reset |
 | Total oil energy | kWh | Accumulated using the kWh per litre in force at the time. **This is the Energy dashboard sensor** |
-| Seasonal oil consumption | L/day | Current season's average, with per-season and per-month figures as attributes. Unknown until a day in this season has been recorded, which on 1 September means waiting for the first autumn reading |
-| Days until empty | d | Current volume divided by the daily rate, falling back to an estimate of 2% of capacity per day when there is no history yet |
+| Seasonal oil consumption | L/day | Current season's average, with per-season and per-month averages and litres per calendar month (`monthly_totals`) as attributes. Unknown until a day in this season has been recorded, which on 1 September means waiting for the first autumn reading |
+| Forecast oil consumption | L/day | What the seasonal model expects the tank to burn today. Its attributes carry the fitted cycle and the litres expected in each of the next 12 months. Unknown until 14 complete days have been recorded. See [Seasonal forecast](#seasonal-forecast) |
+| Days until empty | d | When the forecast says the current volume runs out. The `method` attribute says which estimate it came from |
+| Projected empty date | — | The same projection as a date, for calendars and automations |
+
+### Seasonal and monthly averages
+
+One sensor per season and one per calendar month, each the average L/day over
+every recorded day in it. The twelve monthly sensors are disabled by default;
+enable the ones you want under the tank's device page. A season or month the integration has not yet seen
+reports unknown, not zero. The season sensors carry the lightest and heaviest
+day as `min` and `max` attributes. Each averages across the two years of
+history: January's sensor is every recorded January day, in either year.
+
+| Sensor | Unit |
+| --- | --- |
+| Winter average oil consumption | L/day |
+| Spring average oil consumption | L/day |
+| Summer average oil consumption | L/day |
+| Autumn average oil consumption | L/day |
+| January average oil consumption | L/day |
+| February average oil consumption | L/day |
+| March average oil consumption | L/day |
+| April average oil consumption | L/day |
+| May average oil consumption | L/day |
+| June average oil consumption | L/day |
+| July average oil consumption | L/day |
+| August average oil consumption | L/day |
+| September average oil consumption | L/day |
+| October average oil consumption | L/day |
+| November average oil consumption | L/day |
+| December average oil consumption | L/day |
 
 ### Price and energy
 
@@ -194,14 +224,76 @@ Other behaviour worth knowing:
   each, not credited whole to the day it was noticed.
 - Weighting is by elapsed time, so a 23- or 25-hour daylight-saving day
   neither gains nor loses oil.
-- Dated history is kept for 400 days, collapsed to one row per day. That is
-  just over a year so each season has data to average against.
+- Dated history is kept for two years and a month (765 days), collapsed to
+  one row per day, so every season and calendar month has two complete
+  instances to average and the forecast sees each winter twice.
+
+### Seasonal forecast
+
+A tank that burns 8 L a day in October will burn far more in January, so
+dividing what is left by last week's average says the oil lasts longer than
+it will in autumn, and runs out sooner than it will in spring. The forecast
+instead models a day's burn as an average plus one annual wave:
+
+```
+burn(day) = average + swing × cos(time of year − peak)
+```
+
+and fits the average, the size of the swing and the date of the peak to the
+daily history by least squares.
+
+Six weeks of autumn cannot say where winter peaks, so until the history
+covers the year the fit leans on a default shape: a peak in mid January, the
+coldest weeks burning 160% of the average and high summer (hot water only)
+40%. That default counts as 30 days of evidence. With a few weeks of history
+it is the shape, scaled so it reproduces what your tank actually burnt; with
+a year of history your tank's own cycle has overruled it.
+
+The fitted wave is the normal year. On top of it the forecast compares the
+last seven complete days with what the wave expected for them. If the last
+week ran 30% hot, today's forecast is 30% up, and the difference halves
+every 14 days going forward: a cold snap moves next week's estimate and
+barely touches next winter's. That ratio is clamped between half and double,
+so one odd week cannot run away with it.
+
+Days until empty walks that forecast forward a day at a time until it has
+burnt what is in the tank. The `method` attribute says which estimate was
+used:
+
+| Method | When |
+| --- | --- |
+| `seasonal` | 14 or more complete days of history. The normal case |
+| `recent_average` | Less history than that: volume divided by the rolling 7-day rate |
+| `manual` | A daily rate set with `set_consumption` overrules everything, the seasonal model included |
+| `capacity_estimate` | No history at all: 2% of capacity a day |
+
+The forecast sensor's attributes show what the model has learnt:
+
+| Attribute | Meaning |
+| --- | --- |
+| `annual_average` | The average daily burn across the year, in L/day |
+| `seasonal_swing_percent` | How far the peak sits above that average. 60 means the coldest weeks burn 160% of it |
+| `peak` | The day of the year the tank burns most |
+| `recent_vs_expected` | Last week's burn over what the model expected for it. 1.2 is 20% above |
+| `fit_days` | Complete days of history the fit used |
+| `months_covered` | How many calendar months they span. Until this approaches 12 the default shape is doing much of the work |
+| `monthly_forecast` | Litres expected in each of the next 12 calendar months, starting with this one |
+| `next_12_months_total` | Their sum, for budgeting a year's oil |
 
 ### What the estimates cannot tell you
 
-- **Days until empty is a straight-line projection.** It divides what is in
-  the tank by your recent average. It knows nothing about the weather, and a
-  cold snap will beat it.
+- **The forecast knows the calendar, not the weather.** It has learnt what a
+  normal November looks like for your house and carries a recent cold or mild
+  spell forward for a few weeks. It cannot see next month's weather, and an
+  unusually hard winter will beat it.
+- **Change how you heat the house and the forecast lags.** New boiler, new
+  insulation, someone now working from home: the fit averages the last two
+  years, so it takes months for a change like that to show fully. The recent
+  adjustment picks up the difference in the meantime, within its half-to-double
+  bounds.
+- **A forecast past two years is not given.** If the model has learnt that
+  the tank burns next to nothing, days until empty reports unknown rather
+  than a number in the thousands.
 - **Before any history exists** it falls back to assuming 2% of tank capacity
   a day. That is a placeholder, not a measurement.
 - **Consumption is inferred, not metered.** It is the difference between two
@@ -243,8 +335,8 @@ target:
   device_id: <your BoilerJuice tank>
 ```
 
-Pass `clear_history: true` to delete the dated history as well. It takes a
-full year to rebuild, so reach for it only when the history itself is wrong,
+Pass `clear_history: true` to delete the dated history as well. It takes two
+years to rebuild in full, so reach for it only when the history itself is wrong,
 not to zero a counter.
 
 ```yaml

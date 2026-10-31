@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import math
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -173,12 +174,22 @@ def test_no_history_means_a_zero_rate() -> None:
     assert consumption.average(consumption.rolling_window({}, at(10))) == 0.0
 
 
-def test_history_is_trimmed_to_just_over_a_year() -> None:
-    totals = {"2024-01-01": 10.0, "2026-01-09": 5.0}
+def test_history_keeps_two_full_years() -> None:
+    """The last two complete Januaries survive, from their first day."""
+    totals = {
+        "2023-11-30": 9.0,
+        "2024-01-01": 10.0,
+        "2025-01-01": 11.0,
+        "2026-01-09": 5.0,
+    }
 
     trimmed = consumption.trim_history(totals, at(10), midnight)
 
-    assert [date.date().isoformat() for date, _ in trimmed] == ["2026-01-09"]
+    assert [date.date().isoformat() for date, _ in trimmed] == [
+        "2024-01-01",
+        "2025-01-01",
+        "2026-01-09",
+    ]
 
 
 # --- transitions ----------------------------------------------------------
@@ -306,3 +317,181 @@ def test_days_until_empty_is_unknown_without_a_capacity() -> None:
 
 def test_days_until_empty_is_unknown_at_zero_percent() -> None:
     assert consumption.days_until_empty(500, 2500, 0, 0.0) is None
+
+
+# --- monthly totals -------------------------------------------------------
+
+
+def test_monthly_totals_keep_each_year_apart() -> None:
+    """The averages merge every January; the totals must not."""
+    totals = {
+        "2025-01-10": 20.0,
+        "2025-01-11": 10.0,
+        "2026-01-10": 5.0,
+        "2026-02-01": 7.25,
+    }
+
+    stats = consumption.seasonal_stats(totals, at(10), midnight)
+
+    assert stats["monthly_totals"] == {
+        "2025-01": 30.0,
+        "2026-01": 5.0,
+        "2026-02": 7.2,
+    }
+
+
+# --- seasonal forecast ----------------------------------------------------
+
+
+def wave(day: date, mean: float = 10.0, swing: float = 8.0, peak: int = 32) -> float:
+    """Return the burn of a tank following an annual cosine peaking on `peak`."""
+    angle = 2 * math.pi * (day.timetuple().tm_yday - peak) / 365.25
+    return max(0.0, mean + swing * math.cos(angle))
+
+
+def history(start: date, days: int, burn=wave) -> dict[str, float]:
+    return {
+        (start + timedelta(days=n)).isoformat(): burn(start + timedelta(days=n))
+        for n in range(days)
+    }
+
+
+NOW = datetime(2026, 10, 31, 12, tzinfo=LONDON)
+
+
+def test_a_year_of_history_recovers_the_tanks_own_cycle() -> None:
+    model = consumption.fit_seasonal(history(date(2025, 10, 31), 365), NOW)
+
+    assert model is not None
+    assert model.mean == pytest.approx(10.0, abs=0.3)
+    # The prior pulls a little towards its own 60% swing; a year of data
+    # should still land close to the real 80%.
+    assert model.amplitude / model.mean == pytest.approx(0.8, abs=0.08)
+    assert abs((model.peak - date(2001, 2, 1)).days) <= 5
+    assert model.months_covered == 12
+
+
+def test_a_few_weeks_of_autumn_scale_the_default_shape() -> None:
+    """Six flat weeks cannot say where winter peaks, so the prior does."""
+    model = consumption.fit_seasonal(history(date(2026, 9, 20), 41, lambda _: 8.0), NOW)
+
+    assert model is not None
+    assert abs((model.peak - date(2001, 1, 15)).days) <= 3
+    assert model.amplitude / model.mean == pytest.approx(
+        consumption.PRIOR_AMPLITUDE_RATIO, abs=0.05
+    )
+    # Scaled so that October reproduces what the tank actually burnt.
+    assert model.expected(date(2026, 10, 15)) == pytest.approx(8.0, abs=0.5)
+    assert model.expected(date(2027, 1, 15)) > 10.0
+
+
+def test_too_little_history_gives_no_seasonal_model() -> None:
+    days = consumption.SEASONAL_MIN_DAYS - 1
+    totals = history(date(2026, 10, 30) - timedelta(days=days), days)
+
+    assert consumption.fit_seasonal(totals, NOW) is None
+    assert consumption.seasonal_forecast(totals, NOW) is None
+
+
+def test_todays_partial_bucket_is_not_fitted() -> None:
+    days = consumption.SEASONAL_MIN_DAYS - 1
+    totals = history(date(2026, 10, 31) - timedelta(days=days), days + 1)
+    assert "2026-10-31" in totals
+
+    assert consumption.fit_seasonal(totals, NOW) is None
+
+
+def test_a_tank_burning_nothing_has_no_seasonal_shape() -> None:
+    totals = history(date(2026, 9, 1), 60, lambda _: 0.0)
+
+    assert consumption.fit_seasonal(totals, NOW) is None
+
+
+def test_the_model_never_expects_a_negative_burn() -> None:
+    model = consumption.SeasonalModel(
+        mean=5.0, cos_term=10.0, sin_term=0.0, fit_days=365, months_covered=12
+    )
+
+    # The trough sits half a year from the 1 January peak.
+    assert model.expected(date(2026, 7, 2)) == 0.0
+
+
+def test_a_cold_week_lifts_the_near_forecast_and_fades() -> None:
+    totals = history(date(2025, 10, 31), 365)
+    for n in range(1, 8):
+        day = (NOW.date() - timedelta(days=n)).isoformat()
+        totals[day] *= 1.5
+
+    outlook = consumption.seasonal_forecast(totals, NOW)
+
+    assert outlook is not None
+    assert outlook.anomaly == pytest.approx(1.5, abs=0.1)
+    today, later = NOW.date(), NOW.date() + timedelta(days=60)
+    assert outlook.daily(today) / outlook.model.expected(today) == pytest.approx(
+        outlook.anomaly
+    )
+    assert outlook.daily(later) / outlook.model.expected(later) < 1.05
+
+
+def test_the_anomaly_is_bounded() -> None:
+    totals = history(date(2025, 10, 31), 365)
+    for n in range(1, 8):
+        totals[(NOW.date() - timedelta(days=n)).isoformat()] *= 10
+
+    outlook = consumption.seasonal_forecast(totals, NOW)
+
+    assert outlook is not None
+    assert outlook.anomaly == consumption.ANOMALY_MAX
+
+
+def test_the_monthly_forecast_runs_twelve_months_across_the_new_year() -> None:
+    outlook = consumption.seasonal_forecast(history(date(2025, 10, 31), 365), NOW)
+
+    assert outlook is not None
+    monthly = outlook.monthly()
+    assert list(monthly) == [
+        "2026-10", "2026-11", "2026-12", "2027-01", "2027-02", "2027-03",
+        "2027-04", "2027-05", "2027-06", "2027-07", "2027-08", "2027-09",
+    ]  # fmt: skip
+    assert monthly["2027-01"] > monthly["2026-10"] > monthly["2027-07"]
+
+
+def flat(rate: float) -> consumption.Forecast:
+    model = consumption.SeasonalModel(
+        mean=rate, cos_term=0.0, sin_term=0.0, fit_days=365, months_covered=12
+    )
+    return consumption.Forecast(model=model, anomaly=1.0, today=NOW.date())
+
+
+@pytest.mark.parametrize("hour", [0, 12, 23])
+def test_a_flat_forecast_matches_the_straight_line(hour: int) -> None:
+    now = NOW.replace(hour=hour)
+    assert consumption.days_until_empty_seasonal(100, flat(10.0), now) == 10.0
+
+
+def test_the_seasonal_projection_sees_winter_coming() -> None:
+    """In autumn the straight line uses autumn's rate; winter burns faster."""
+    totals = history(date(2025, 10, 31), 365)
+    outlook = consumption.seasonal_forecast(totals, NOW)
+    assert outlook is not None
+
+    recent = consumption.average(consumption.rolling_window(totals, NOW))
+    straight = consumption.days_until_empty(1000, 2500, 40, recent)
+    seasonal = consumption.days_until_empty_seasonal(1000, outlook, NOW)
+
+    assert seasonal is not None
+    assert straight is not None
+    assert seasonal < straight * 0.8
+
+
+def test_a_tank_that_outlasts_the_horizon_has_no_empty_date() -> None:
+    assert consumption.days_until_empty_seasonal(100, flat(0.0), NOW) is None
+
+
+def test_the_seasonal_projection_needs_a_volume() -> None:
+    assert consumption.days_until_empty_seasonal(None, flat(10.0), NOW) is None
+    assert consumption.days_until_empty_seasonal(0, flat(10.0), NOW) == 0.0
+
+
+def test_a_singular_system_is_refused() -> None:
+    assert consumption._solve([[1.0, 2.0], [2.0, 4.0]], [1.0, 2.0]) is None
