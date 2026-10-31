@@ -16,9 +16,11 @@ from typing import Any
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -453,6 +455,103 @@ class BoilerJuiceDataUpdateCoordinator(
                 published[tracker.tank_id] = updated
             if published:
                 self.async_set_updated_data(published)
+
+    async def _async_recorded_volumes(
+        self, tank_id: str, start: datetime
+    ) -> list[tuple[datetime, float]]:
+        """Return the recorder's hourly mean volumes for one tank, in litres.
+
+        Long-term statistics rather than state history: the recorder purges
+        states after ten days by default but keeps hourly statistics for
+        good, which is what makes months of history recoverable at all.
+        """
+        # Imported here, not at module level: the recorder is optional, and
+        # only this action needs it.
+        from homeassistant.components.recorder.statistics import (
+            statistics_during_period,
+        )
+        from homeassistant.helpers.recorder import get_instance
+
+        entity_id = er.async_get(self.hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{tank_id}_tank_volume"
+        )
+        if entity_id is None:
+            return []
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start,
+            None,
+            {entity_id},
+            "hour",
+            {"volume": UnitOfVolume.LITERS},
+            {"mean"},
+        )
+        samples: list[tuple[datetime, float]] = []
+        for row in rows.get(entity_id, []):
+            mean = row.get("mean")
+            if mean is not None:
+                moment = dt_util.as_local(dt_util.utc_from_timestamp(row["start"]))
+                samples.append((moment, float(mean)))
+        return samples
+
+    async def async_import_history(
+        self, tank_ids: Iterable[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Rebuild the days before our own history from the recorder.
+
+        For installs that ran a version which kept 30 days of history, or
+        that were reset with `clear_history`: the recorder still holds the
+        tank volume, so the season and month averages need not wait a year.
+        Returns what was imported, per tank.
+        """
+        if "recorder" not in self.hass.config.components:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="recorder_unavailable"
+            )
+
+        now = dt_util.now()
+        start = now - timedelta(days=SEASONAL_HISTORY_DAYS)
+        trackers = self._selected_trackers(tank_ids)
+        # Read before taking the lock: a database query has no business
+        # holding up a poll.
+        recorded = {
+            tracker.tank_id: consumption.history_from_volumes(
+                await self._async_recorded_volumes(tracker.tank_id, start)
+            )
+            for tracker in trackers
+        }
+
+        async with self._lock:
+            now = dt_util.now()
+            undo = [(tracker, tracker.snapshot()) for tracker in trackers]
+            results = {
+                tracker.tank_id: tracker.import_history(recorded[tracker.tank_id], now)
+                for tracker in trackers
+            }
+            try:
+                await self._async_persist()
+            except Exception:
+                self._rollback(undo)
+                raise
+
+            published = dict(self.data or {})
+            for tracker in trackers:
+                state = published.get(tracker.tank_id)
+                if state is None:
+                    continue
+                updated = dict(state)
+                updated["seasonal_stats"] = consumption.seasonal_stats(
+                    consumption.daily_totals(tracker.state.history),
+                    now,
+                    self._local_midnight,
+                )
+                published[tracker.tank_id] = tracker.decorate(
+                    updated, self._kwh_per_litre, now
+                )
+            if published:
+                self.async_set_updated_data(published)
+            return results
 
     async def async_set_consumption(
         self,

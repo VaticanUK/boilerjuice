@@ -78,3 +78,24 @@ set_consumption:
       example: 01HZ...abcd
       selector:
         text:
+
+import_history:
+  name: Import history
+  description: >-
+    Rebuild the per-day consumption history from the tank volume Home
+    Assistant's recorder has kept, for the days before the integration's own
+    history begins. Fills the seasonal and monthly averages and the forecast
+    without waiting a year. Only earlier days are added, so running it again
+    changes nothing, and the consumption totals are left alone.
+  target:
+    entity:
+      integration: boilerjuice
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: >-
+        Optional. Targets a whole BoilerJuice account rather than one tank.
+      required: false
+      example: 01HZ...abcd
+      selector:
+        text:

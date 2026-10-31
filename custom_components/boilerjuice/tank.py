@@ -16,7 +16,7 @@ from typing import Any
 from . import consumption
 from .models import TankReading
 from .parser import percentage, volume_litres
-from .storage import ConsumptionState
+from .storage import ConsumptionState, DatedHistory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -212,6 +212,45 @@ class TankTracker:
         self._sample_days = len(window)
         self.state.daily_litres = consumption.average(window) if window else None
         return totals
+
+    def import_history(self, imported: DatedHistory, now: datetime) -> dict[str, Any]:
+        """Fill the days before our own history from reconstructed history.
+
+        Only days earlier than anything already recorded are taken, and
+        earlier than the last level change: days after it are still waiting
+        for the next detected drop, which will spread its litres over them
+        and would count them a second time. Running it twice adds nothing.
+
+        The totals are left alone. They count oil burnt since the last
+        reset, and the Energy dashboard reads them; restating them would
+        show up there as months of consumption arriving at once.
+        """
+        existing = consumption.daily_totals(self.state.history)
+        boundaries = [min(existing)] if existing else []
+        if self.state.last_update is not None:
+            boundaries.append(self.state.last_update.date().isoformat())
+        boundary = min(boundaries, default=now.date().isoformat())
+
+        cutoff = (now - timedelta(days=consumption.SEASONAL_HISTORY_DAYS)).date()
+        taken = {
+            day: litres
+            for day, litres in consumption.daily_totals(imported).items()
+            if cutoff.isoformat() <= day < boundary and litres > 0
+        }
+        self.state.history = sorted(
+            [
+                *self.state.history,
+                *((self._midnight(day), litres) for day, litres in taken.items()),
+            ],
+            key=lambda row: row[0],
+        )
+        self._refresh_rolling_average(now)
+        return {
+            "days": len(taken),
+            "litres": round(sum(taken.values()), 1),
+            "first_day": min(taken, default=None),
+            "last_day": max(taken, default=None),
+        }
 
     def refresh_sample_count(self, now: datetime) -> None:
         """Recount the samples behind the measured rate (used after loading)."""

@@ -351,7 +351,7 @@ A device or entity target resets that tank. Targeting the config entry resets
 every tank on the account. With more than one account configured a target is
 required: this action rewrites stored history, so it will not guess.
 
-Both actions apply to one account per call. A target that reaches two of them,
+All three actions apply to one account per call. A target that reaches two of them,
 whether as a list of entry IDs or through an area or floor holding tanks from
 each, is refused with nothing changed. Accounts are written one at a time and
 a document already on disk cannot be put back, so a call that failed half way
@@ -376,6 +376,43 @@ data:
 `daily` is a **persistent override**. It replaces the measured rate and
 survives polls and restarts until you run `reset_consumption`. Leave it out
 to keep using the measured rate.
+
+### `boilerjuice.import_history`
+
+Rebuilds the per-day history for the days before the integration's own
+history begins, from the tank volume Home Assistant's recorder has kept.
+Run it once after installing on a system that has been recording the tank
+for a while, or after a version that kept only 30 days of history (anything
+before 16 August 2026) has thrown the rest away. The seasonal and monthly
+averages and the forecast then have months to work from instead of starting
+from nothing.
+
+```yaml
+action: boilerjuice.import_history
+target:
+  device_id: <your BoilerJuice tank>
+```
+
+It reads the hourly long-term statistics of the tank's **Volume** sensor,
+which the recorder keeps indefinitely, and replays them the way a live
+poll would: each fall in volume is oil burnt, spread over the days since
+the level last moved; a rise of 100 L or more is a delivery; a smaller rise
+is the reading wobbling and is ignored, so the same litres are never
+counted twice.
+
+What it will and will not touch:
+
+- **Only earlier days.** Days already in the history, and days since the
+  last level change (which the next detected drop will fill), are left
+  alone, so running it twice changes nothing.
+- **Not the totals.** Total oil consumption and Total oil energy count from
+  the last reset and feed the Energy dashboard; restating them would show
+  months of oil arriving at once.
+- **Only what the recorder kept.** Nothing older than the two-year history
+  window, and nothing from before the Volume sensor existed.
+
+Run it from Developer tools, Actions, with **Return response** ticked, to
+see how many days and litres were imported for each tank.
 
 ## Automation examples
 
